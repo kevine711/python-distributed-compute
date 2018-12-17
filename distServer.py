@@ -41,11 +41,57 @@ def client_disconnected(sock):
 	clientJobQueue = client[3]
 	# Return all jobs from this client to the unassignedJobs queue
 	for jobQueue in clientJobQueue:
-		unassignedJobs.append(jobQueue[0])
+		if(not jobQueue[0] in unassignedJobs):
+			unassignedJobs.append(jobQueue[0])
 	CLIENTS.remove(client)
 	print "Client (%s, %s) disconnected" % (client[1], client[2])
 	sock.close()
  
+def print_status_table():
+	# Print updated job status table in the terminal
+	#  Client IP/Port, Job Instance, Completion %
+	table = PrettyTable(['Client IP/Port', 'Job ID', 'Completion %'])
+	for client in CLIENTS:
+		clientJobQueue = client[3]
+		for jobTuple in clientJobQueue:
+			table.add_row(["{0}, {1}".format(client[1], client[2]), jobTuple[0].getId(), jobTuple[1]])
+	for job in unassignedJobs:
+		table.add_row(["unassigned", job.getId(), 0])
+	os.system('cls' if os.name == 'nt' else 'clear') # Clear terminal
+	print table
+ 
+def get_client_stats(client):
+	sock = client[0]
+	sock.settimeout(4)
+	sock.sendall('stats')
+	MFC = ""
+	appending = 1
+	time.sleep(3)
+	while(appending > 0):
+		try:
+			partial = sock.recv(RECV_BUFFER)
+			MFC = MFC + partial
+			if(len(partial) < RECV_BUFFER):
+				# nothing, or EOF detected
+				break
+		except socket.timeout as msg:
+			appending = 0
+		except socket.error as msg:
+			appending = 0
+			print msg
+	# Expect at this point MFC is a pickled jobQueue from the client
+	clientJobQueue = []
+
+	if(len(MFC) > 0):
+		try:
+			clientJobQueue = pickle.loads(MFC)
+		except:
+			pass
+		client[3] = clientJobQueue
+	else:
+		# no message from client received, don't send anything
+		pass
+	
  
 SERVER_PORT = 49999
 SERVER_IP = "0.0.0.0"
@@ -55,6 +101,7 @@ MAX_JOBS_PER_CLIENT = 3
 CLIENTS = [] # List of lists, inner list is [clientSocket, clientIP, clientPORT, clientJobQueue] 
 jobQueue = [] # All jobs to be processed, including ones assigned to clients
 unassignedJobs = [] # List unassigned jobs
+completedJobs = [] # tuples (client, job)
 
 
 # Check if arguments provided
@@ -66,7 +113,7 @@ if len(sys.argv) > 1:
 # This demo uses a job class which simply runs time.sleep for some number of seconds (provided below)
 # For a real application, you would update this job class to take in relevant arguments and do real work
 id = 100
-for i in {1, 3, 4, 5, 5, 5, 8, 7, 10, 14, 16, 14, 2, 3, 18, 28, 50, 20, 20}:
+for i in {10, 30, 19, 9, 13, 15, 18, 17, 8, 22, 16, 14, 12, 33, 31, 28, 29, 21, 20}:
 	job = j.Job(id, i, i)
 	jobQueue.append(job)
 	unassignedJobs.append(job)
@@ -120,73 +167,55 @@ while(1):
 
 	# Update client jobQueues on server and request add/remove jobs on client
 	for client in CLIENTS:
+		get_client_stats(client)
+
 		sock = client[0]
-		sock.settimeout(4)
-		sock.sendall('stats')
-		MFC = ""
-		appending = 1
-		time.sleep(3)
-		while(appending > 0):
-			try:
-				partial = sock.recv(RECV_BUFFER)
-				MFC = MFC + partial
-				if(len(partial) < RECV_BUFFER):
-					# nothing, or EOF detected
-					break
-			except socket.timeout as msg:
-				appending = 0
-			except socket.error as msg:
-				appending = 0
-				print msg
-		# Expect at this point MFC is a pickled jobQueue from the client
-		clientJobQueue = []
-		
-		operationsSendToClientTuples = [] # these tuples are (operation, jobInstance) 1=add, 0=remove
-		if(len(MFC) > 0):
-			try:
-				clientJobQueue = pickle.loads(MFC)
-			except:
-				pass
-			client[3] = clientJobQueue
-			for jobTuple in clientJobQueue:
-				# request client to remove complete jobs 
-				if(jobTuple[1] == 100):
-					operationsSendToClientTuples.append((0, jobTuple[0]))   # request removal in client
-					try:
-						jobQueue.remove(jobTuple[0])							# remove in server
-						print "job removed from jobQueue: {0}".format(jobTuple[0].getId())
-					except ValueError:
-						# Try/Catch because some delay between requesting client to remove and updated stats
-						# Don't attempt to remove on server more than once
-						pass
-			# send new jobs to client
-			jobCount = len(clientJobQueue) - len(operationsSendToClientTuples)    # how many jobs on client's plate
-			while(jobCount < MAX_JOBS_PER_CLIENT):
-				if(len(unassignedJobs) == 0):
-					break;
-				operationsSendToClientTuples.append((1, unassignedJobs.pop())) # request client to add job
-				jobCount = jobCount + 1
-			if(len(operationsSendToClientTuples) > 0): #request needs to be sent for adds and removals
-				sock.sendall(pickle.dumps(operationsSendToClientTuples))
-		else:
-			# no message from client received, don't send anything
-			pass
-		
-	# Print updated job status table in the terminal
-	#  Client IP/Port, Job Instance, Completion %
-	table = PrettyTable(['Client IP/Port', 'Job ID', 'Completion %'])
-	for client in CLIENTS:
 		clientJobQueue = client[3]
+		operationsSendToClientTuples = [] # these tuples are (operation, jobInstance) 1=add, 0=remove
+		lengthClientQueue = len(clientJobQueue)
 		for jobTuple in clientJobQueue:
-			table.add_row(["{0}, {1}".format(client[1], client[2]), jobTuple[0].getId(), jobTuple[1]])
-	for job in unassignedJobs:
-		table.add_row(["unassigned", job.getId(), 0])
-	os.system('cls' if os.name == 'nt' else 'clear') # Clear terminal
-	print table
+			# request client to remove complete jobs 
+			if(jobTuple[1] == 100):
+				operationsSendToClientTuples.append((0, jobTuple[0]))   # request removal in client
+				try:
+					jobQueue.remove(jobTuple[0])							# remove in server
+					completedJobs.append((client, jobTuple[0]))
+					print "job removed from jobQueue: {0}".format(jobTuple[0].getId())
+				except ValueError:
+					# Try/Catch because some delay between requesting client to remove and updated stats
+					# Don't attempt to remove on server more than once
+					pass
+				clientJobQueue.remove(jobTuple)
+		# send new jobs to client
+		jobCount = lengthClientQueue - len(operationsSendToClientTuples)    # how many jobs on client's plate
+		while(jobCount < MAX_JOBS_PER_CLIENT):
+			if(len(unassignedJobs) == 0):
+				break;
+			poppedJob = unassignedJobs.pop()
+			clientJobQueue.append((poppedJob, 0))
+			operationsSendToClientTuples.append((1, poppedJob)) # request client to add job
+			jobCount = jobCount + 1
+		if(len(operationsSendToClientTuples) > 0): #request needs to be sent for adds and removals
+			sock.sendall(pickle.dumps(operationsSendToClientTuples))
+			client[3] = clientJobQueue # local update to clientJobQueue until client confirms
+				
+		# Print updated job status table in the terminal
+		print_status_table()
 	
-	time.sleep(3)
+	# Print updated job status table in the terminal
+	print_status_table()
+	time.sleep(1)
 	if(len(jobQueue) < 1):
 		break
 
 os.system('cls' if os.name == 'nt' else 'clear') # Clear terminal
 print "All Jobs Complete!"
+# Print updated job status table in the terminal
+#  Client IP/Port, Job Instance, Completion %
+table = PrettyTable(['Client IP/Port', 'Job ID', 'Completion %'])
+for jobTuple in completedJobs:
+	job = jobTuple[1]
+	client = jobTuple[0]
+	table.add_row(["{0}, {1}".format(client[1], client[2]), job.getId(), 100])
+os.system('cls' if os.name == 'nt' else 'clear') # Clear terminal
+print table
